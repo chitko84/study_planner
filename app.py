@@ -77,6 +77,14 @@ st.markdown("""
         display: inline-block;
         font-size: 0.9rem;
     }
+    .day-card {
+        background-color: white;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #3B82F6;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -162,15 +170,13 @@ def create_pdf(study_plan, subjects, study_hours, selected_days):
         # Clean day name - remove duplicate "Day X: " prefix
         day_name = day_plan["Day"]
         if day_name.startswith("Day "):
-            # Check if it already has the pattern we want
             parts = day_name.split(": ", 1)
-            if len(parts) == 2 and parts[1].startswith("Day "):
-                # Remove the duplicate "Day X: " prefix
+            if len(parts) == 2:
                 day_display = parts[1]
             else:
                 day_display = day_name
         else:
-            day_display = f"Day {study_plan.index(day_plan) + 1}: {day_name}"
+            day_display = day_name
         
         # Format tasks
         tasks_text = ", ".join(day_plan["Tasks"])
@@ -410,6 +416,21 @@ with st.sidebar:
     st.subheader("Daily Study Hours")
     study_hours = st.slider("Hours per day", 0.5, 8.0, st.session_state.study_hours, 0.5, key="daily_hours")
     
+    # Maximum subjects per day
+    st.subheader("📊 Study Limits")
+    max_subjects_per_day = st.slider(
+        "Maximum subjects per day", 
+        1, 10, 5,
+        help="Limit how many different subjects you study each day to avoid overload"
+    )
+    
+    # Minimum study session length
+    min_session_hours = st.slider(
+        "Minimum study session (hours)",
+        0.5, 3.0, 1.0, 0.5,
+        help="Minimum continuous time to allocate for each subject"
+    )
+    
     # Preferred Study Times
     st.subheader("⏰ Preferred Study Times")
     st.markdown("Select your preferred study time slots:")
@@ -472,7 +493,7 @@ with col1:
         with col_b:
             difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
         
-        hours_needed = st.slider("Hours needed per week", 1, 20, 5)
+        hours_needed = st.slider("Hours needed per week", 1, 30, 5)
         
         # Add Subject Button
         add_subject = st.form_submit_button("➕ Add Subject")
@@ -499,21 +520,23 @@ with col2:
     if not st.session_state.subjects:
         st.info("No subjects added yet. Add your first subject on the left!")
     else:
-        for i, subject in enumerate(st.session_state.subjects):
-            with st.container():
-                st.markdown(f"""
-                <div class="subject-card">
-                    <h4>{subject['name']}</h4>
-                    <p>📅 Deadline: {subject['deadline']}</p>
-                    <p>⚡ Difficulty: {subject['difficulty']}</p>
-                    <p>⏱️ Hours/week: {subject['hours_needed']}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Remove button for each subject
-                if st.button(f"Remove {subject['name']}", key=f"remove_{i}"):
-                    st.session_state.subjects.pop(i)
-                    st.rerun()
+        # Create a scrollable container for subjects
+        with st.container():
+            for i, subject in enumerate(st.session_state.subjects):
+                with st.container():
+                    st.markdown(f"""
+                    <div class="subject-card">
+                        <h4>{subject['name']}</h4>
+                        <p>📅 Deadline: {subject['deadline']}</p>
+                        <p>⚡ Difficulty: {subject['difficulty']}</p>
+                        <p>⏱️ Hours/week: {subject['hours_needed']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Remove button for each subject
+                    if st.button(f"Remove {subject['name']}", key=f"remove_{i}"):
+                        st.session_state.subjects.pop(i)
+                        st.rerun()
 
 st.divider()
 
@@ -523,7 +546,7 @@ st.divider()
 if st.session_state.subjects and selected_days:
     if st.button("🚀 Generate Weekly Study Plan", use_container_width=True):
         with st.spinner("Creating your optimized study plan..."):
-            # Simple planning algorithm
+            # Improved planning algorithm
             plan = []
             remaining_hours = {subject['name']: subject['hours_needed'] for subject in st.session_state.subjects}
             
@@ -536,6 +559,13 @@ if st.session_state.subjects and selected_days:
                 )
             )
             
+            # Calculate total weekly hours needed
+            total_weekly_hours_needed = sum(subject['hours_needed'] for subject in st.session_state.subjects)
+            total_available_hours = len(selected_days) * study_hours
+            
+            if total_weekly_hours_needed > total_available_hours:
+                st.warning(f"⚠️ Warning: You need {total_weekly_hours_needed} hours/week but only have {total_available_hours} available. Consider reducing study hours or adding more days.")
+            
             # Distribute hours across days (starting from Day 1)
             day_number = 1
             for day in selected_days:
@@ -544,16 +574,20 @@ if st.session_state.subjects and selected_days:
                 day_plan = {"Day": f"Day {day_number}: {clean_day_name}", "Tasks": [], "TimeSlots": []}
                 day_hours_used = 0
                 
+                # Calculate how many subjects we can reasonably fit today
+                subjects_today = min(max_subjects_per_day, len(sorted_subjects))
+                
+                # Round-robin allocation for multiple subjects
                 for subject in sorted_subjects:
-                    if remaining_hours[subject['name']] > 0:
-                        # Allocate hours based on priority
+                    if remaining_hours[subject['name']] > 0 and len(day_plan["Tasks"]) < subjects_today:
+                        # Calculate allocation based on priority and minimum session
                         hours_to_allocate = min(
                             study_hours - day_hours_used,
                             remaining_hours[subject['name']],
-                            subject['priority'] * 0.5  # Hard gets more hours
+                            max(min_session_hours, subject['priority'] * 0.75)  # Adjusted multiplier
                         )
                         
-                        if hours_to_allocate > 0:
+                        if hours_to_allocate >= min_session_hours:  # Only allocate if meets minimum
                             day_plan["Tasks"].append(
                                 f"{subject['name']} ({hours_to_allocate:.1f}h)"
                             )
@@ -573,6 +607,27 @@ if st.session_state.subjects and selected_days:
                     plan.append(day_plan)
                     day_number += 1
             
+            # If there are still remaining hours, redistribute
+            if any(hours > 0 for hours in remaining_hours.values()):
+                # Add extra study sessions on existing days
+                for day_plan in plan:
+                    if day_plan["Tasks"]:
+                        day_hours_used = sum(float(task.split("(")[1].replace("h)", "")) for task in day_plan["Tasks"])
+                        remaining_day_capacity = study_hours - day_hours_used
+                        
+                        if remaining_day_capacity > min_session_hours:
+                            # Try to add more hours to existing subjects in this day
+                            for subject_name, hours_left in remaining_hours.items():
+                                if hours_left > 0 and remaining_day_capacity >= min_session_hours:
+                                    # Find if this subject is already in today's tasks
+                                    subject_in_today = any(subject_name in task for task in day_plan["Tasks"])
+                                    
+                                    if subject_in_today and len(day_plan["Tasks"]) < max_subjects_per_day:
+                                        hours_to_add = min(remaining_day_capacity, hours_left, min_session_hours * 2)
+                                        day_plan["Tasks"].append(f"{subject_name} (+{hours_to_add:.1f}h)")
+                                        remaining_hours[subject_name] -= hours_to_add
+                                        remaining_day_capacity -= hours_to_add
+            
             st.session_state.study_plan = plan
             st.session_state.original_plan = plan.copy()
             st.success("✅ Study plan generated!")
@@ -583,6 +638,25 @@ if st.session_state.subjects and selected_days:
 if st.session_state.study_plan:
     st.markdown('<div class="plan-table">', unsafe_allow_html=True)
     st.header("📅 Your Weekly Study Plan")
+    
+    # Display summary statistics
+    total_planned_hours = 0
+    total_days = len(st.session_state.study_plan)
+    subjects_per_day_stats = []
+    
+    for day_plan in st.session_state.study_plan:
+        day_hours = sum(float(task.split("(")[1].replace("h)", "")) for task in day_plan["Tasks"])
+        total_planned_hours += day_hours
+        subjects_per_day_stats.append(len(day_plan["Tasks"]))
+    
+    col_stats1, col_stats2, col_stats3 = st.columns(3)
+    with col_stats1:
+        st.metric("Total Days", total_days)
+    with col_stats2:
+        avg_subjects = sum(subjects_per_day_stats) / len(subjects_per_day_stats) if subjects_per_day_stats else 0
+        st.metric("Avg Subjects/Day", f"{avg_subjects:.1f}")
+    with col_stats3:
+        st.metric("Total Planned Hours", f"{total_planned_hours:.1f}h")
     
     # Display prayer times and breaks
     with st.expander("🕌 Today's Prayer & Break Times"):
@@ -597,12 +671,23 @@ if st.session_state.study_plan:
             for break_name, time_range in BREAK_TIMES.items():
                 st.markdown(f'<div class="prayer-time">{break_name}: {time_range}</div>', unsafe_allow_html=True)
     
-    # Display with time slots if available
+    # Display with time slots if available - using a scrollable container
     for day_plan in st.session_state.study_plan:
         with st.expander(f"📌 {day_plan['Day']}", expanded=False):
+            st.markdown(f"**Total Study Time: {sum(float(task.split('(')[1].replace('h)', '')) for task in day_plan['Tasks']):.1f}h**")
             st.markdown("**Study Tasks:**")
-            for task in day_plan['Tasks']:
-                st.markdown(f"- {task}")
+            
+            # Group tasks by subject (in case of multiple sessions)
+            task_groups = {}
+            for task in day_plan["Tasks"]:
+                subject = task.split(" (")[0]
+                hours = float(task.split("(")[1].replace("h)", ""))
+                if subject not in task_groups:
+                    task_groups[subject] = 0
+                task_groups[subject] += hours
+            
+            for subject, total_hours in task_groups.items():
+                st.markdown(f"- **{subject}:** {total_hours:.1f}h")
             
             # Display time slots if available
             if day_plan.get('TimeSlots'):
@@ -617,16 +702,13 @@ if st.session_state.study_plan:
                 
                 # Display grouped time slots
                 for task_name, times in task_slots.items():
-                    # Combine consecutive times
                     if times:
-                        time_ranges = []
+                        # Combine consecutive times
                         start_time = times[0].split(" - ")[0]
                         end_time = times[-1].split(" - ")[1]
-                        time_ranges.append(f"{start_time} - {end_time}")
-                        
-                        for time_range in time_ranges:
-                            st.markdown(f"<div class='time-slot'>{time_range}: {task_name}</div>", 
-                                      unsafe_allow_html=True)
+                        duration_hours = len(times) * 0.5  # 30 min slots
+                        st.markdown(f"<div class='time-slot'>{start_time} - {end_time}: {task_name} ({duration_hours:.1f}h)</div>", 
+                                  unsafe_allow_html=True)
             else:
                 if st.session_state.preferred_times:
                     st.info("⚠️ No available time slots that don't conflict with prayer/break times. Try selecting different preferred times.")
@@ -634,13 +716,19 @@ if st.session_state.study_plan:
                     st.info("No specific time slots assigned. Add preferred study times in the sidebar!")
     
     # Explanation
-    with st.expander("🔍 Why this plan?"):
-        st.markdown("""
+    with st.expander("🔍 Plan Details & Tips"):
+        st.markdown(f"""
         - **Priority-based allocation**: Subjects with closer deadlines and higher difficulty get more study time
-        - **Burnout prevention**: Workload is distributed evenly across available days
-        - **Respects limits**: No day exceeds your daily study hour limit
+        - **Burnout prevention**: Limited to {max_subjects_per_day} subjects/day maximum
+        - **Effective sessions**: Minimum {min_session_hours}h per subject for focused learning
+        - **Respects limits**: No day exceeds your {study_hours}h daily study limit
         - **Time preferences**: Schedule respects your preferred study times
         - **Prayer & break times**: Automatically excludes Islamic prayer times (10 min each) and meal breaks
+        
+        **📊 Distribution:**
+        - Average subjects per day: {sum(subjects_per_day_stats)/len(subjects_per_day_stats):.1f}
+        - Total weekly study hours: {total_planned_hours:.1f}h
+        - Study days this week: {total_days}
         """)
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -685,17 +773,20 @@ if st.session_state.study_plan:
     subject_totals = {}
     for day_plan in st.session_state.original_plan:
         for task in day_plan["Tasks"]:
-            subject = task.split(" (")[0]
-            hours = float(task.split("(")[1].replace("h)", ""))
+            subject = task.split(" (")[0].replace(" (+", "")  # Handle extra sessions
+            hours = float(task.split("(")[1].replace("h)", "").replace("+", ""))
             subject_totals[subject] = subject_totals.get(subject, 0) + hours
     
     # Display progress bars
     if subject_totals:
+        max_hours = max(subject_totals.values())
         for subject, hours in subject_totals.items():
-            max_hours = max(subject_totals.values())
             percentage = (hours / max_hours) * 100 if max_hours > 0 else 0
-            st.markdown(f"**{subject}**")
-            st.progress(percentage / 100, text=f"{hours:.1f} hours")
+            col_prog1, col_prog2 = st.columns([1, 4])
+            with col_prog1:
+                st.markdown(f"**{subject}**")
+            with col_prog2:
+                st.progress(percentage / 100, text=f"{hours:.1f} hours")
     
     # ======================
     # EXPORT OPTIONS
@@ -708,6 +799,7 @@ if st.session_state.study_plan:
     with col_export1:
         if st.button("📋 Copy Plan to Clipboard", use_container_width=True):
             plan_text = "📚 STUDY.PLANNER - Your Weekly Plan\n\n"
+            plan_text += f"Settings: {max_subjects_per_day} subjects/day max, {min_session_hours}h min sessions\n\n"
             plan_text += "🕌 Prayer Times (10 min each):\n"
             for prayer, time in ISLAMIC_PRAYER_TIMES.items():
                 plan_text += f"  - {prayer}: {time}\n"
@@ -766,4 +858,4 @@ elif selected_days and not st.session_state.subjects:
 # FOOTER
 # ======================
 st.divider()
-st.caption("STUDY.PLANNER v2.1 | Built with Streamlit | © Chit Ko Ko's Personal Project")
+st.caption("STUDY.PLANNER v2.2 | Built with Streamlit | © Chit Ko Ko's Personal Project")
